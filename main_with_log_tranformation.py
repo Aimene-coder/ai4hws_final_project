@@ -127,11 +127,46 @@ print("Inf dans y :", np.isinf(y).sum())
 print(X.dtypes)
 print(y.dtype)
 
+
+# ============================================================
+# 10. LOG TRANSFORMATION OF THE TARGET VARIABLE
+# ============================================================
+import numpy as np
+
+# Check the distribution before transformation
+print("Distribution of y before log transformation :")
+print(y.describe())
+
+# Apply log transformation (adding epsilon to avoid log(0))
+epsilon = 1e-6
+y_log = np.log(y + epsilon)
+
+print("\nDistribution of y after log transformation :")
+print(y_log.describe())
+
+# Visualize the distribution before and after
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+axes[0].hist(y, bins=50, color='steelblue', edgecolor='white')
+axes[0].set_title('Distribution of y — Original')
+axes[0].set_xlabel('Wildfire Probability')
+axes[0].set_ylabel('Count')
+
+axes[1].hist(y_log, bins=50, color='darkorange', edgecolor='white')
+axes[1].set_title('Distribution of y — Log Transformed')
+axes[1].set_xlabel('Log(Wildfire Probability)')
+axes[1].set_ylabel('Count')
+
+plt.tight_layout()
+plt.savefig('y_distribution.png', dpi=150)
+plt.close()
+print("✅ Distribution plot saved : y_distribution.png")
+
 # ============================================================
 # 11. SPLIT TRAIN / TEST
 # ============================================================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
+    X, y_log,         
     test_size=0.2,
     random_state=42
 )
@@ -143,35 +178,50 @@ print(f"Test  : {X_test.shape}")
 # 12. TRAINING
 # ============================================================
 param_grid = {
-    'n_estimators': [50, 100, 200, 400, 800, 1000],
-    'max_depth': [3, 4, 6, 8],
+    'n_estimators': [400, 800, 1000],
+    'max_depth': [4,6,8],
     'learning_rate': [0.01, 0.1, 0.2],
-    'subsample': [0.8, 1.0]
+    'subsample': [0.7, 0.8, 1.0],
 }
 
 grid_search = GridSearchCV(
     XGBRegressor(random_state=42, n_jobs=-1),
     param_grid,
-    cv=5,               # 5 fold cross-validation
+    cv=5,
     scoring='r2',
     verbose=1
 )
 
 grid_search.fit(X_train, y_train)
 
-print("Best parameters:", grid_search.best_params_)
-print("Best R²          :", grid_search.best_score_)
+print("Best parameters :", grid_search.best_params_)
+print("Best R²         :", grid_search.best_score_)
 
-# Retrain with the best parameters
 model = grid_search.best_estimator_
 
 # ============================================================
 # 13. EVALUATION
 # ============================================================
-y_pred = evaluate_model(model, X_test, y_test)
+
+# Predict in log space
+y_pred_log = model.predict(X_test)
+
+# Convert back to original scale
+y_pred_original = np.exp(y_pred_log) - epsilon
+y_test_original = np.exp(y_test) - epsilon
+
+# Evaluate on original scale
+rmse = np.sqrt(mean_squared_error(y_test_original, y_pred_original))
+mae  = mean_absolute_error(y_test_original, y_pred_original)
+r2   = r2_score(y_test_original, y_pred_original)
+
+print("\n=== Results (original scale) ===")
+print(f"RMSE : {rmse:.4f}")
+print(f"MAE  : {mae:.4f}")
+print(f"R²   : {r2:.4f}")
 
 # ============================================================
-# 14. IMPORTANCE OF VARIABLES
+# 14. FEATURE IMPORTANCE
 # ============================================================
 plot_feature_importance(model, features)
 
@@ -179,10 +229,11 @@ plot_feature_importance(model, features)
 # 15. PREDICTION MAP
 # ============================================================
 
-# Predict on the full dataset
-y_pred_full = model.predict(X)
+# Predict on full dataset in log space then convert back
+y_pred_full_log      = model.predict(X)
+y_pred_full_original = np.exp(y_pred_full_log) - epsilon
 
-# Rebuild an empty grid at reference dimensions
+# Rebuild empty grid at reference dimensions
 grid = np.full((ref_height, ref_width), np.nan)
 
 # Convert x/y coordinates back to row/col indices
@@ -192,7 +243,7 @@ rows_idx, cols_idx = rasterio.transform.rowcol(
     df_final['y'].values
 )
 
-grid[rows_idx, cols_idx] = y_pred_full
+grid[rows_idx, cols_idx] = y_pred_full_original
 
 # Display the map
 plt.figure(figsize=(12, 8))
@@ -205,7 +256,7 @@ plt.savefig('wildfire_prediction_map.png', dpi=150)
 plt.close()
 print("✅ Map saved : wildfire_prediction_map.png")
 
-# Save as .tif
+# Save as .tif for QGIS
 with rasterio.open(
     'wildfire_prediction.tif',
     'w',
